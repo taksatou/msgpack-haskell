@@ -1,7 +1,7 @@
 note
 =====
 
-Added experimental implementation of C language and Pointer type.
+Added experimental C language support and Pointer type to MessagePack IDL.
 
 
 MessagePack for Haskell
