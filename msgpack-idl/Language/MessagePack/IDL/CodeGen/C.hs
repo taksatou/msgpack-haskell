@@ -105,7 +105,7 @@ int #{configPrefix c}_#{msgName}_to_msgpack(msgpack_packer *pk, #{msgName} *arg)
 
 int #{configPrefix c}_#{msgName}_from_msgpack(msgpack_object *obj, #{msgName} *arg) {
     if (obj->type != MSGPACK_OBJECT_ARRAY
-        || obj->via.array.size == #{length msgFields}) {
+        || obj->via.array.size != #{length msgFields}) {
         return -1;
     }
 
