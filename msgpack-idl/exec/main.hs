@@ -8,6 +8,7 @@ import Text.Peggy
 import Language.MessagePack.IDL
 import Language.MessagePack.IDL.Internal
 import qualified Language.MessagePack.IDL.CodeGen.Haskell as Haskell
+import qualified Language.MessagePack.IDL.CodeGen.C as C
 import qualified Language.MessagePack.IDL.CodeGen.Cpp as Cpp
 import qualified Language.MessagePack.IDL.CodeGen.Ruby as Ruby
 import qualified Language.MessagePack.IDL.CodeGen.Java as Java
@@ -24,6 +25,10 @@ data MPIDL
     , module_name :: String
     , filepath :: FilePath
     }
+  | C
+    { output_dir :: FilePath
+    , prefix :: String
+    , filepath :: FilePath }
   | Cpp
     { output_dir :: FilePath
     , namespace :: String
@@ -61,6 +66,11 @@ main = do
     modes [ Haskell
             { output_dir = def
             , module_name = ""
+            , filepath = def &= argPos 0
+            }
+          , C
+            { output_dir = def
+            , prefix = "msgpack"
             , filepath = def &= argPos 0
             }
           , Cpp
@@ -112,6 +122,9 @@ compile conf = do
       print spec
       withDirectory (output_dir conf) $ do
         case conf of
+          C {..} -> do
+            C.generate (C.Config filepath prefix) spec
+          
           Cpp {..} -> do
             Cpp.generate (Cpp.Config filepath namespace pficommon) spec
           
