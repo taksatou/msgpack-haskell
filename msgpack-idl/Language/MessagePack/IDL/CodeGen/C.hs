@@ -25,18 +25,21 @@ data Config
 generate:: Config -> Spec -> IO ()
 generate Config {..} spec = do
   let c = (Config configFilePath configPrefix)
+      tag = T.toUpper $ T.pack configPrefix
 
   createDirectoryIfMissing True (takeBaseName configFilePath);
   setCurrentDirectory (takeBaseName configFilePath);
   LT.writeFile (configPrefix ++ "_types.h") $ templ configFilePath [lt|
-#ifndef _A_H_
-#define _A_H_
+#ifndef _#{tag}_H_
+#define _#{tag}_H_
 
 #include <msgpack.h>
 
 #{LT.concat $ map (genTypeDecl c) spec }
 
-#endif /* _A_H_ */
+#{LT.concat $ map (genFuncDecl c) spec }
+
+#endif /* _#{tag}_H_ */
 |]
 
   LT.writeFile (configPrefix ++ "_types.c") $ templ configFilePath [lt|
@@ -44,20 +47,56 @@ generate Config {..} spec = do
 #include <msgpack.h>
 #include "#{configPrefix}_types.h"
 
-#{LT.concat $ map (genTypeImpl c) spec }
+#{LT.concat $ map (genFuncImpl c) spec }
 
 |]
 
 genTypeDecl :: Config -> Decl -> LT.Text
 genTypeDecl c MPMessage {..} = [lt|
+typedef struct {
+#{LT.concat $ map (indent4 . genField c) msgFields }} #{msgName};
+|]
+
+genTypeDecl _ s = [lt|
+/* #{show s} unsupported */
+|]
+
+genField :: Config -> Field -> LT.Text
+genField _ Field {..} = [lt|#{genField' fldType fldName}|]
+
+genField' :: Type -> T.Text -> LT.Text
+genField' (TInt _ _) name = [lt|int64_t #{name};|]
+genField' (TFloat _) name = [lt|double #{name};|]
+genField' TBool name = [lt|bool #{name};|]
+genField' TString name = [lt|char *#{name};|]
+genField' (TUserDef typeName _) name = [lt|#{typeName} #{name};|]
+genField' TRaw name = [lt|void *#{name};
+size_t #{name}_size;|]
+
+genField' (TList t) name = [lt|size_t #{name}_size;
+#{genField' t name}|]
+
+genField' (TMap t1 t2) name = [lt|size_t #{name}_size;
+#{genField' t1 keys_field }
+#{genField' t2 vals_field }|]
+  where
+  keys_field = T.cons '*' (T.append name $ T.pack "_keys")
+  vals_field = T.cons '*' (T.append name $ T.pack "_vals")
+
+genField' t name = [lt|/* #{show t}: #{name} unsupported */|]
+
+
+
+genFuncDecl :: Config -> Decl -> LT.Text
+genFuncDecl c MPMessage {..} = [lt|
 int #{configPrefix c}_#{msgName}_to_msgpack(msgpack_packer *pk, #{msgName} *arg);
 int #{configPrefix c}_#{msgName}_from_msgpack(msgpack_object *obj, #{msgName} *arg);|]
 
-genTypeDecl _ _ = ""
+genFuncDecl _ _ = ""
 
 -- TODO: error check
-genTypeImpl :: Config -> Decl -> LT.Text
-genTypeImpl c MPMessage {..} = [lt|
+genFuncImpl :: Config -> Decl -> LT.Text
+genFuncImpl c MPMessage {..} = [lt|
 int #{configPrefix c}_#{msgName}_to_msgpack(msgpack_packer *pk, #{msgName} *arg) {
     msgpack_pack_array(pk, #{length msgFields});
 #{LT.concat $ map pk msgFields}
@@ -85,7 +124,7 @@ int #{configPrefix c}_#{msgName}_from_msgpack(msgpack_object *obj, #{msgName} *a
   nums :: [Integer]
   nums = [0..]
 
-genTypeImpl _ _ = ""
+genFuncImpl _ _ = ""
 
 
 toMsgpack :: Config -> Type -> T.Text -> LT.Text
