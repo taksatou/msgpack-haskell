@@ -1,3 +1,9 @@
+note
+=====
+
+Added experimental implementation of C language and Pointer type.
+
+
 MessagePack for Haskell
 =======================
 
