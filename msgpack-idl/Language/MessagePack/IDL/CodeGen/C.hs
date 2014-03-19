@@ -54,7 +54,7 @@ generate Config {..} spec = do
 genTypeDecl :: Config -> Decl -> LT.Text
 genTypeDecl c MPMessage {..} = [lt|
 typedef struct {
-#{LT.concat $ map (indent4 . genField c) msgFields }} #{msgName};
+#{LT.concat $ map (indent 4 . genField c) msgFields }} #{msgName};
 |]
 
 genTypeDecl _ s = [lt|
@@ -70,8 +70,8 @@ genField' (TFloat _) name = [lt|double #{name};|]
 genField' TBool name = [lt|bool #{name};|]
 genField' TString name = [lt|char *#{name};|]
 genField' (TUserDef typeName _) name = [lt|#{typeName} #{name};|]
-genField' TRaw name = [lt|void *#{name};
-size_t #{name}_size;|]
+genField' TRaw name = [lt|size_t #{name}_size;
+void *#{name};|]
 
 genField' (TList t) name = [lt|size_t #{name}_size;
 #{genField' t name}|]
@@ -115,10 +115,10 @@ int #{configPrefix c}_#{msgName}_from_msgpack(msgpack_object *obj, #{msgName} *a
 }
 |]
   where
-  pk Field {..} = indent4
+  pk Field {..} = indent 4
     [lt|#{toMsgpack c fldType (T.append (T.pack "arg->") fldName)}|]
 
-  unpk (idx, Field {..}) = indent4
+  unpk (idx, Field {..}) = indent 4
     [lt|#{fromMsgpack c (T.pack $ printf "o[%d]" idx) fldType fldDefault (T.append (T.pack "arg->") fldName)}|]
 
   nums :: [Integer]
@@ -139,7 +139,7 @@ toMsgpack _ TString arg = [lt|do {
 
 toMsgpack c (TList t) arg = [lt|msgpack_pack_array(pk, #{lis_size});
 for (int _i = 0; i < #{lis_size}; ++_i) {
-#{indent4 $ toMsgpack c t ith_val}}|]
+#{indent 4 $ toMsgpack c t ith_val}}|]
   where
     lis_size = T.append arg (T.pack "_size")
     ith_val = T.append arg (T.pack "[_i]")
@@ -147,7 +147,7 @@ for (int _i = 0; i < #{lis_size}; ++_i) {
 
 toMsgpack c (TMap t1 t2) arg = [lt|msgpack_pack_map(pk, #{map_size});
 for (int _i = 0; i < #{map_size}; ++_i) {
-#{indent4 $ toMsgpack c t1 ith_key}#{indent4 $ toMsgpack c t2 ith_val}}|]
+#{indent 4 $ toMsgpack c t1 ith_key}#{indent 4 $ toMsgpack c t2 ith_val}}|]
   where
     map_size = T.append arg (T.pack "_size")
     ith_key = T.append (T.cons '&' arg) (T.pack "_keys[_i]")
@@ -156,18 +156,18 @@ for (int _i = 0; i < #{map_size}; ++_i) {
 toMsgpack c (TNullable t) arg = [lt|if (!#{arg}) {
     msgpack_pack_null(pk);
 } else {
-#{indent4 $ toMsgpack c t arg}}|]
+#{indent 4 $ toMsgpack c t arg}}|]
 
 toMsgpack c (TPointer t) arg = [lt|if (!#{arg}) {
     msgpack_pack_null(pk);
 } else {
-#{indent4 $ toMsgpack' t}}|]
+#{indent 4 $ toMsgpack' t}}|]
   where
     toMsgpack' (TUserDef name _) = [lt|#{configPrefix c}_#{name}_to_msgpack(pk, #{arg});|]
     toMsgpack' t' = toMsgpack c t' (T.cons '*' arg)
 
 toMsgpack c (TUserDef name _) arg = [lt|#{configPrefix c}_#{name}_to_msgpack(pk, &#{arg});|]
-toMsgpack _ t _ = [lt|/* #{show t} unsupported */|]
+toMsgpack _ t _ = [lt|msgpack_pack_nil(pk); /* #{show t} unsupported */|]
 
 -- TODO:
 --   * set default
@@ -183,14 +183,14 @@ fromMsgpack c o (TUserDef name _) _ arg = [lt|#{configPrefix c}_#{name}_from_msg
 
 fromMsgpack c o (TList t) d arg = [lt|#{lis_size} = #{o}.via.array.size;
 for (int _i = 0; _i < #{o}.via.array.size; ++_i) {
-#{indent4 $ fromMsgpack c (T.pack $ printf "%s.via.array.ptr[_i]" $ T.unpack o) t d ith_val}}|]
+#{indent 4 $ fromMsgpack c (T.pack $ printf "%s.via.array.ptr[_i]" $ T.unpack o) t d ith_val}}|]
   where
     lis_size = T.append arg (T.pack "_size")
     ith_val = T.append arg (T.pack "[_i]")
 
 fromMsgpack c o (TMap t1 t2) d arg = [lt|#{map_size} = #{o}.via.map.size;
 for (int _i = 0; _i < #{o}.via.map.size; ++_i) {
-#{indent4 $ fromMsgpack c (T.pack $ printf "%s.via.map.ptr[_i].key" $ T.unpack o) t1 d ith_key}#{indent4 $ fromMsgpack c (T.pack $ printf "%s.via.map.ptr[_i].val" $ T.unpack o) t2 d ith_val}}|]
+#{indent 4 $ fromMsgpack c (T.pack $ printf "%s.via.map.ptr[_i].key" $ T.unpack o) t1 d ith_key}#{indent 4 $ fromMsgpack c (T.pack $ printf "%s.via.map.ptr[_i].val" $ T.unpack o) t2 d ith_val}}|]
   where
     map_size = T.append arg (T.pack "_size")
     ith_key = T.append arg (T.pack "_keys[_i]")
@@ -200,7 +200,7 @@ for (int _i = 0; _i < #{o}.via.map.size; ++_i) {
 fromMsgpack c o (TPointer t) d arg = [lt|if (#{o}.type == MSGPACK_OBJECT_NIL) {
     #{arg} = NULL;
 } else {
-#{indent4 $ fromMsgpack' t}}|]
+#{indent 4 $ fromMsgpack' t}}|]
   where
     fromMsgpack' (TUserDef name _) = [lt|#{configPrefix c}_#{name}_from_msgpack(&#{o}, #{arg});|]
     fromMsgpack' t' = fromMsgpack c o t' d (T.cons '*' arg)
@@ -223,5 +223,5 @@ templ filepath content = [lt|
 #{content}
 |]
 
-indent4 :: LT.Text -> LT.Text
-indent4 s =  LT.unlines $ map (LT.append (LT.pack "    ")) $ LT.split (\ c -> c == '\n') s
+indent :: Int -> LT.Text -> LT.Text
+indent i s =  LT.unlines $ map (LT.append (LT.pack $ take i $ repeat ' ')) $ LT.split (\ c -> c == '\n') s
