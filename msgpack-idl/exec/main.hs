@@ -27,7 +27,6 @@ data MPIDL
     }
   | C
     { output_dir :: FilePath
-    , prefix :: String
     , filepath :: FilePath }
   | Cpp
     { output_dir :: FilePath
@@ -70,7 +69,6 @@ main = do
             }
           , C
             { output_dir = def
-            , prefix = "msgpack"
             , filepath = def &= argPos 0
             }
           , Cpp
@@ -123,7 +121,7 @@ compile conf = do
       withDirectory (output_dir conf) $ do
         case conf of
           C {..} -> do
-            C.generate (C.Config filepath prefix) spec
+            C.generate (C.Config filepath) spec
           
           Cpp {..} -> do
             Cpp.generate (Cpp.Config filepath namespace pficommon) spec

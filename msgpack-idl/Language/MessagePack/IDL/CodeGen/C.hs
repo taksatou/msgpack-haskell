@@ -20,59 +20,62 @@ import Language.MessagePack.IDL.Syntax
 data Config
   = Config
     { configFilePath :: FilePath
-    , configPrefix :: String
     }
   deriving (Show, Eq)
 
 generate:: Config -> Spec -> IO ()
 generate Config {..} spec = do
-  let c = (Config configFilePath configPrefix)
-      tag = T.toUpper $ T.pack configPrefix
+  let name = takeBaseName configFilePath
+      tag = T.toUpper $ T.pack name
       ss = sortSpec spec
 
   createDirectoryIfMissing True (takeBaseName configFilePath);
   setCurrentDirectory (takeBaseName configFilePath);
-  LT.writeFile (configPrefix ++ "_types.h") $ templ configFilePath [lt|
+  LT.writeFile (name ++ "_types.h") $ templ configFilePath [lt|
 #ifndef _#{tag}_H_
 #define _#{tag}_H_
 
 #include <msgpack.h>
 
-#{LT.concat $ map (genTypeDecl c) ss }
+#{LT.concat $ map genTypeDecl ss }
 
-#{LT.concat $ map (genFuncDecl c) ss }
+#{LT.concat $ map genNewDelDecl ss }
+
+#{LT.concat $ map genFuncDecl ss }
 
 #endif /* _#{tag}_H_ */
 |]
 
-  LT.writeFile (configPrefix ++ "_types.c") $ templ configFilePath [lt|
+  LT.writeFile (name ++ "_types.c") $ templ configFilePath [lt|
 #include <string.h>
 #include <msgpack.h>
-#include "#{configPrefix}_types.h"
+#include "#{name}_types.h"
 
-#{LT.concat $ map (genFuncImpl c) ss }
+#{LT.concat $ map genNewDelImpl ss }
+
+#{LT.concat $ map genFuncImpl ss }
 
 |]
 
-genTypeDecl :: Config -> Decl -> LT.Text
-genTypeDecl c MPMessage {..} = [lt|
+genTypeDecl :: Decl -> LT.Text
+genTypeDecl MPMessage {..} = [lt|
 typedef struct {
-#{LT.concat $ map (indent 4 . genField c) msgFields }} #{msgName};
+#{LT.concat $ map (indent 4 . genField) msgFields }} #{msgName};
 |]
 
-genTypeDecl c MPEnum {..} = [lt|
+genTypeDecl MPEnum {..} = [lt|
 typedef enum {
-#{LT.concat $ map (indent 4 . genEnumField c) $ sortedEnumMem }} #{enumName};
+#{LT.concat $ map (indent 4 . genEnumField) $ sortedEnumMem }} #{enumName};
 |]
   where
     sortedEnumMem = sortBy (compare `on` fst) enumMem
 
-genTypeDecl _ s = [lt|
+genTypeDecl s = [lt|
 /* #{show s} unsupported */
 |]
 
-genField :: Config -> Field -> LT.Text
-genField _ Field {..} = [lt|#{genField' fldType fldName}|]
+genField :: Field -> LT.Text
+genField Field {..} = [lt|#{genField' fldType fldName}|]
 
 genField' :: Type -> T.Text -> LT.Text
 genField' (TInt _ _) name = [lt|int64_t #{name};|]
@@ -96,39 +99,43 @@ genField' (TMap t1 t2) name = [lt|size_t #{name}_size;
 
 genField' t name = [lt|/* #{show t}: #{name} unsupported */|]
 
-genEnumField :: Config -> (Int, T.Text) -> LT.Text
-genEnumField _ (num, name) = [lt|#{name} = #{num},|]
+genEnumField :: (Int, T.Text) -> LT.Text
+genEnumField (num, name) = [lt|#{name} = #{num},|]
 
+genNewDelDecl :: Decl -> LT.Text
+genNewDelDecl MPMessage {..} = [lt|
+|]
+genNewDelDecl _ = ""
 
-genFuncDecl :: Config -> Decl -> LT.Text
-genFuncDecl c MPMessage {..} = [lt|
-int #{configPrefix c}_#{msgName}_to_msgpack(msgpack_packer *pk, #{msgName} *arg);
-int #{configPrefix c}_#{msgName}_from_msgpack(msgpack_object *obj, #{msgName} *arg);|]
+genFuncDecl :: Decl -> LT.Text
+genFuncDecl MPMessage {..} = [lt|
+int #{msgName}_to_msgpack(msgpack_packer *pk, #{msgName} *arg);
+int #{msgName}_from_msgpack(msgpack_object *obj, #{msgName} *arg);|]
 
-genFuncDecl c MPEnum {..} = [lt|
+genFuncDecl MPEnum {..} = [lt|
 
-inline int #{configPrefix c}_#{enumName}_to_msgpack(msgpack_packer *pk, #{enumName} arg) {
+inline int #{enumName}_to_msgpack(msgpack_packer *pk, #{enumName} arg) {
     return msgpack_pack_int(pk, arg);
 }
 
-inline int #{configPrefix c}_#{enumName}_from_msgpack(msgpack_object *obj, #{enumName} *arg) {
+inline int #{enumName}_from_msgpack(msgpack_object *obj, #{enumName} *arg) {
     *arg = obj->via.i64;
     return 0;
 }
 |]
 
-genFuncDecl _ _ = ""
+genFuncDecl _ = ""
 
 -- TODO: error check
-genFuncImpl :: Config -> Decl -> LT.Text
-genFuncImpl c MPMessage {..} = [lt|
-int #{configPrefix c}_#{msgName}_to_msgpack(msgpack_packer *pk, #{msgName} *arg) {
+genFuncImpl :: Decl -> LT.Text
+genFuncImpl MPMessage {..} = [lt|
+int #{msgName}_to_msgpack(msgpack_packer *pk, #{msgName} *arg) {
     msgpack_pack_array(pk, #{length msgFields});
 #{LT.concat $ map pk msgFields}
     return 0;
 }
 
-int #{configPrefix c}_#{msgName}_from_msgpack(msgpack_object *obj, #{msgName} *arg) {
+int #{msgName}_from_msgpack(msgpack_object *obj, #{msgName} *arg) {
     if (obj->type != MSGPACK_OBJECT_ARRAY
         || obj->via.array.size != #{length msgFields}) {
         return -1;
@@ -141,76 +148,82 @@ int #{configPrefix c}_#{msgName}_from_msgpack(msgpack_object *obj, #{msgName} *a
 |]
   where
   pk Field {..} = indent 4
-    [lt|#{toMsgpack c fldType (T.append (T.pack "arg->") fldName)}|]
+    [lt|#{toMsgpack fldType (T.append (T.pack "arg->") fldName)}|]
 
   unpk (idx, Field {..}) = indent 4
-    [lt|#{fromMsgpack c (T.pack $ printf "o[%d]" idx) fldType fldDefault (T.append (T.pack "arg->") fldName)}|]
+    [lt|#{fromMsgpack (T.pack $ printf "o[%d]" idx) fldType fldDefault (T.append (T.pack "arg->") fldName)}|]
 
   nums :: [Integer]
   nums = [0..]
 
-genFuncImpl _ MPEnum {..} = ""  -- enum is inline
-genFuncImpl _ d = "/* #{show d} unsupported */"
+genFuncImpl MPEnum {..} = ""  -- enum is inline
+genFuncImpl x = [lt|/* #{show x} unsupported */|]
 
 
-toMsgpack :: Config -> Type -> T.Text -> LT.Text
-toMsgpack _ (TInt _ _) arg = [lt|msgpack_pack_int(pk, #{arg});|]
-toMsgpack _ (TFloat _) arg = [lt|msgpack_pack_double(pk, #{arg});|]
-toMsgpack _ TBool arg = [lt|#{arg} ? msgpack_pack_true(pk) : msgpack_pack_false(pk)});|]
-toMsgpack _ TString arg = [lt|do {
+genNewDelImpl :: Decl -> LT.Text
+genNewDelImpl MPMessage {..} = [lt|
+|]
+genNewDelImpl _ = ""
+
+
+toMsgpack :: Type -> T.Text -> LT.Text
+toMsgpack (TInt _ _) arg = [lt|msgpack_pack_int(pk, #{arg});|]
+toMsgpack (TFloat _) arg = [lt|msgpack_pack_double(pk, #{arg});|]
+toMsgpack TBool arg = [lt|#{arg} ? msgpack_pack_true(pk) : msgpack_pack_false(pk)});|]
+toMsgpack TString arg = [lt|do {
     size_t _l = strlen(#{arg});
     msgpack_pack_raw(pk, _l);
     msgpack_pack_raw_body(pk, #{arg}, _l);
 } while(0);|]
 
-toMsgpack _ TRaw arg = [lt|msgpack_pack_raw(pk, #{raw_size});
+toMsgpack TRaw arg = [lt|msgpack_pack_raw(pk, #{raw_size});
 msgpack_pack_raw_body(pk, #{arg}, #{raw_size});|]
   where
     raw_size = T.append arg (T.pack "_size")
 
-toMsgpack c (TList t) arg = [lt|msgpack_pack_array(pk, #{lis_size});
+toMsgpack (TList t) arg = [lt|msgpack_pack_array(pk, #{lis_size});
 for (int _i = 0; i < #{lis_size}; ++_i) {
-#{indent 4 $ toMsgpack c t ith_val}}|]
+#{indent 4 $ toMsgpack t ith_val}}|]
   where
     lis_size = T.append arg (T.pack "_size")
     ith_val = T.append arg (T.pack "[_i]")
 
 
-toMsgpack c (TMap t1 t2) arg = [lt|msgpack_pack_map(pk, #{map_size});
+toMsgpack (TMap t1 t2) arg = [lt|msgpack_pack_map(pk, #{map_size});
 for (int _i = 0; i < #{map_size}; ++_i) {
-#{indent 4 $ toMsgpack c t1 ith_key}#{indent 4 $ toMsgpack c t2 ith_val}}|]
+#{indent 4 $ toMsgpack t1 ith_key}#{indent 4 $ toMsgpack t2 ith_val}}|]
   where
     map_size = T.append arg (T.pack "_size")
     ith_key = T.append (T.cons '&' arg) (T.pack "_keys[_i]")
     ith_val = T.append (T.cons '&' arg) (T.pack "_vals[_i]")
 
-toMsgpack c (TNullable t) arg = [lt|if (!#{arg}) {
+toMsgpack (TNullable t) arg = [lt|if (!#{arg}) {
     msgpack_pack_null(pk);
 } else {
-#{indent 4 $ toMsgpack c t arg}}|]
+#{indent 4 $ toMsgpack t arg}}|]
 
 
-toMsgpack c (TUserDef name _) arg = [lt|#{configPrefix c}_#{name}_to_msgpack(pk, &#{arg});|]
-toMsgpack _ t _ = [lt|msgpack_pack_nil(pk); /* #{show t} unsupported */|]
+toMsgpack (TUserDef name _) arg = [lt|#{name}_to_msgpack(pk, &#{arg});|]
+toMsgpack t _ = [lt|msgpack_pack_nil(pk); /* #{show t} unsupported */|]
 
 -- TODO:
 --   * set default
 --   * malloc for pointer?
 
-fromMsgpack :: Config -> T.Text -> Type -> Maybe Literal -> T.Text -> LT.Text
-fromMsgpack _ o (TInt _ _) _ arg = [lt|#{arg} = #{o}.via.i64;|]
-fromMsgpack _ o (TFloat _) _ arg = [lt|#{arg} = #{o}.via.dec;|]
-fromMsgpack _ o TBool _ arg = [lt|#{arg} = #{o}.via.boolean;|]
-fromMsgpack _ o TString _ arg = [lt|#{arg} = strdup(#{o}.via.raw.ptr);|]
-fromMsgpack c o (TUserDef name _) _ arg = [lt|#{configPrefix c}_#{name}_from_msgpack(&#{o}, &#{arg});|]
+fromMsgpack :: T.Text -> Type -> Maybe Literal -> T.Text -> LT.Text
+fromMsgpack o (TInt _ _) _ arg = [lt|#{arg} = #{o}.via.i64;|]
+fromMsgpack o (TFloat _) _ arg = [lt|#{arg} = #{o}.via.dec;|]
+fromMsgpack o TBool _ arg = [lt|#{arg} = #{o}.via.boolean;|]
+fromMsgpack o TString _ arg = [lt|#{arg} = strdup(#{o}.via.raw.ptr);|]
+fromMsgpack o (TUserDef name _) _ arg = [lt|#{name}_from_msgpack(&#{o}, &#{arg});|]
 
-fromMsgpack c o (TNullable t) d arg = [lt|if (#{o}.type == MSGPACK_OBJECT_NIL) {
+fromMsgpack o (TNullable t) d arg = [lt|if (#{o}.type == MSGPACK_OBJECT_NIL) {
     #{arg} = NULL;
 } else {
-#{indent 4 $ fromMsgpack c o t d arg}
+#{indent 4 $ fromMsgpack o t d arg}
 }|]
 
-fromMsgpack _ o TRaw _ arg = [lt|#{arg} = malloc(#{o}.via.raw.size);
+fromMsgpack o TRaw _ arg = [lt|#{arg} = malloc(#{o}.via.raw.size);
 if (#{arg} == NULL) {
     return -1;
 }
@@ -219,40 +232,22 @@ memcpy(#{arg}, #{o}.via.raw.ptr, #{o}.via.raw.size);|]
   where
     raw_size = T.append arg (T.pack "_size")
 
-fromMsgpack c o (TList t) d arg = [lt|#{lis_size} = #{o}.via.array.size;
+fromMsgpack o (TList t) d arg = [lt|#{lis_size} = #{o}.via.array.size;
 for (int _i = 0; _i < #{o}.via.array.size; ++_i) {
-#{indent 4 $ fromMsgpack c (T.pack $ printf "%s.via.array.ptr[_i]" $ T.unpack o) t d ith_val}}|]
+#{indent 4 $ fromMsgpack (T.pack $ printf "%s.via.array.ptr[_i]" $ T.unpack o) t d ith_val}}|]
   where
     lis_size = T.append arg (T.pack "_size")
     ith_val = T.append arg (T.pack "[_i]")
 
-fromMsgpack c o (TMap t1 t2) d arg = [lt|#{map_size} = #{o}.via.map.size;
+fromMsgpack o (TMap t1 t2) d arg = [lt|#{map_size} = #{o}.via.map.size;
 for (int _i = 0; _i < #{o}.via.map.size; ++_i) {
-#{indent 4 $ fromMsgpack c (T.pack $ printf "%s.via.map.ptr[_i].key" $ T.unpack o) t1 d ith_key}#{indent 4 $ fromMsgpack c (T.pack $ printf "%s.via.map.ptr[_i].val" $ T.unpack o) t2 d ith_val}}|]
+#{indent 4 $ fromMsgpack (T.pack $ printf "%s.via.map.ptr[_i].key" $ T.unpack o) t1 d ith_key}#{indent 4 $ fromMsgpack (T.pack $ printf "%s.via.map.ptr[_i].val" $ T.unpack o) t2 d ith_val}}|]
   where
     map_size = T.append arg (T.pack "_size")
     ith_key = T.append arg (T.pack "_keys[_i]")
     ith_val = T.append arg (T.pack "_vals[_i]")
 
-
--- fromMsgpack c o (TPointer t) d arg = [lt|if (#{o}.type == MSGPACK_OBJECT_NIL) {
---     #{arg} = NULL;
--- } else {
--- #{indent 4 $ fromMsgpack' t}}|]
---   where
---     fromMsgpack' (TUserDef name _) = [lt|#{configPrefix c}_#{name}_from_msgpack(&#{o}, #{arg});|]
---     fromMsgpack' t' = fromMsgpack c o t' d (T.cons '*' arg)
---     --   for malloc
---     -- valsize (TInt _ _) = [lt|sizeof(#{o}.via.i64)|]
---     -- valsize (TFloat _) = [lt|sizeof(#{o}.via.dec)|]
---     -- valsize TBool = [lt|sizeof(#{o}.via.boolean)|]
---     -- valsize TString = [lt|#{o}.via.raw.size|]
---     -- valsize TRaw = [lt|#{o}.via.raw.size|]
---     -- valsize (TUserDef name _) = [lt|sizeof(#{name})|]
---     -- valsize _ = LT.pack "0"
-
-
-fromMsgpack _ _ t _ _ = [lt|/* #{show t} unsupported */|]
+fromMsgpack _ t _ _ = [lt|/* #{show t} unsupported */|]
 
 templ :: FilePath -> LT.Text -> LT.Text
 templ filepath content = [lt|
