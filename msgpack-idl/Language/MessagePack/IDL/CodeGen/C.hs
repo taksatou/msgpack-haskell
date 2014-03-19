@@ -80,6 +80,7 @@ genField' (TFloat _) name = [lt|double #{name};|]
 genField' TBool name = [lt|bool #{name};|]
 genField' TString name = [lt|char *#{name};|]
 genField' (TUserDef typeName _) name = [lt|#{typeName} #{name};|]
+genField' (TNullable t) name = genField' t name
 genField' TRaw name = [lt|size_t #{name}_size;
 void *#{name};|]
 
@@ -96,7 +97,7 @@ genField' (TMap t1 t2) name = [lt|size_t #{name}_size;
 genField' t name = [lt|/* #{show t}: #{name} unsupported */|]
 
 genEnumField :: Config -> (Int, T.Text) -> LT.Text
-genEnumField c (num, name) = [lt|#{name} = #{num},|]
+genEnumField _ (num, name) = [lt|#{name} = #{num},|]
 
 
 genFuncDecl :: Config -> Decl -> LT.Text
@@ -162,6 +163,11 @@ toMsgpack _ TString arg = [lt|do {
     msgpack_pack_raw_body(pk, #{arg}, _l);
 } while(0);|]
 
+toMsgpack _ TRaw arg = [lt|msgpack_pack_raw(pk, #{raw_size});
+msgpack_pack_raw_body(pk, #{arg}, #{raw_size});|]
+  where
+    raw_size = T.append arg (T.pack "_size")
+
 toMsgpack c (TList t) arg = [lt|msgpack_pack_array(pk, #{lis_size});
 for (int _i = 0; i < #{lis_size}; ++_i) {
 #{indent 4 $ toMsgpack c t ith_val}}|]
@@ -183,13 +189,6 @@ toMsgpack c (TNullable t) arg = [lt|if (!#{arg}) {
 } else {
 #{indent 4 $ toMsgpack c t arg}}|]
 
--- toMsgpack c (TPointer t) arg = [lt|if (!#{arg}) {
---     msgpack_pack_null(pk);
--- } else {
--- #{indent 4 $ toMsgpack' t}}|]
---   where
---     toMsgpack' (TUserDef name _) = [lt|#{configPrefix c}_#{name}_to_msgpack(pk, #{arg});|]
---     toMsgpack' t' = toMsgpack c t' (T.cons '*' arg)
 
 toMsgpack c (TUserDef name _) arg = [lt|#{configPrefix c}_#{name}_to_msgpack(pk, &#{arg});|]
 toMsgpack _ t _ = [lt|msgpack_pack_nil(pk); /* #{show t} unsupported */|]
@@ -201,10 +200,15 @@ toMsgpack _ t _ = [lt|msgpack_pack_nil(pk); /* #{show t} unsupported */|]
 fromMsgpack :: Config -> T.Text -> Type -> Maybe Literal -> T.Text -> LT.Text
 fromMsgpack _ o (TInt _ _) _ arg = [lt|#{arg} = #{o}.via.i64;|]
 fromMsgpack _ o (TFloat _) _ arg = [lt|#{arg} = #{o}.via.dec;|]
-fromMsgpack c o (TNullable t) d arg = fromMsgpack c o t d arg
 fromMsgpack _ o TBool _ arg = [lt|#{arg} = #{o}.via.boolean;|]
 fromMsgpack _ o TString _ arg = [lt|#{arg} = strdup(#{o}.via.raw.ptr);|]
 fromMsgpack c o (TUserDef name _) _ arg = [lt|#{configPrefix c}_#{name}_from_msgpack(&#{o}, &#{arg});|]
+
+fromMsgpack c o (TNullable t) d arg = [lt|if (#{o}.type == MSGPACK_OBJECT_NIL) {
+    #{arg} = NULL;
+} else {
+#{indent 4 $ fromMsgpack c o t d arg}
+}|]
 
 fromMsgpack _ o TRaw _ arg = [lt|#{arg} = malloc(#{o}.via.raw.size);
 if (#{arg} == NULL) {
