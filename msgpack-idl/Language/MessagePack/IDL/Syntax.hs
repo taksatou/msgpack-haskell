@@ -60,7 +60,6 @@ data Type
   | TRaw
   | TString
   | TNullable Type
-  | TPointer Type
   | TList Type
   | TMap Type Type
   | TTuple [Type]

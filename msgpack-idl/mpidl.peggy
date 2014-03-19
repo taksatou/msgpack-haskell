@@ -28,7 +28,6 @@ field :: Field
 
 ftype :: Type
   = ftypeNN "?" { TNullable $1 }
-  / ftypeNN "*" { TPointer $1 }
   / ftypeNN
 
 rtype :: Maybe Type
