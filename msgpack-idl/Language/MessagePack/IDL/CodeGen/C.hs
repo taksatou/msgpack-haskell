@@ -6,6 +6,8 @@ module Language.MessagePack.IDL.CodeGen.C (
   ) where
 
 import Text.Printf
+import Data.List (sortBy)
+import Data.Function
 import qualified Data.Text as T
 import qualified Data.Text.Lazy as LT
 import qualified Data.Text.Lazy.IO as LT
@@ -26,6 +28,7 @@ generate:: Config -> Spec -> IO ()
 generate Config {..} spec = do
   let c = (Config configFilePath configPrefix)
       tag = T.toUpper $ T.pack configPrefix
+      ss = sortSpec spec
 
   createDirectoryIfMissing True (takeBaseName configFilePath);
   setCurrentDirectory (takeBaseName configFilePath);
@@ -35,9 +38,9 @@ generate Config {..} spec = do
 
 #include <msgpack.h>
 
-#{LT.concat $ map (genTypeDecl c) spec }
+#{LT.concat $ map (genTypeDecl c) ss }
 
-#{LT.concat $ map (genFuncDecl c) spec }
+#{LT.concat $ map (genFuncDecl c) ss }
 
 #endif /* _#{tag}_H_ */
 |]
@@ -47,7 +50,7 @@ generate Config {..} spec = do
 #include <msgpack.h>
 #include "#{configPrefix}_types.h"
 
-#{LT.concat $ map (genFuncImpl c) spec }
+#{LT.concat $ map (genFuncImpl c) ss }
 
 |]
 
@@ -56,6 +59,13 @@ genTypeDecl c MPMessage {..} = [lt|
 typedef struct {
 #{LT.concat $ map (indent 4 . genField c) msgFields }} #{msgName};
 |]
+
+genTypeDecl c MPEnum {..} = [lt|
+typedef enum {
+#{LT.concat $ map (indent 4 . genEnumField c) $ sortedEnumMem }} #{enumName};
+|]
+  where
+    sortedEnumMem = sortBy (compare `on` fst) enumMem
 
 genTypeDecl _ s = [lt|
 /* #{show s} unsupported */
@@ -80,17 +90,31 @@ genField' (TMap t1 t2) name = [lt|size_t #{name}_size;
 #{genField' t1 keys_field }
 #{genField' t2 vals_field }|]
   where
-  keys_field = T.cons '*' (T.append name $ T.pack "_keys")
-  vals_field = T.cons '*' (T.append name $ T.pack "_vals")
+    keys_field = T.cons '*' (T.append name $ T.pack "_keys")
+    vals_field = T.cons '*' (T.append name $ T.pack "_vals")
 
 genField' t name = [lt|/* #{show t}: #{name} unsupported */|]
 
+genEnumField :: Config -> (Int, T.Text) -> LT.Text
+genEnumField c (num, name) = [lt|#{name} = #{num},|]
 
 
 genFuncDecl :: Config -> Decl -> LT.Text
 genFuncDecl c MPMessage {..} = [lt|
 int #{configPrefix c}_#{msgName}_to_msgpack(msgpack_packer *pk, #{msgName} *arg);
 int #{configPrefix c}_#{msgName}_from_msgpack(msgpack_object *obj, #{msgName} *arg);|]
+
+genFuncDecl c MPEnum {..} = [lt|
+
+inline int #{configPrefix c}_#{enumName}_to_msgpack(msgpack_packer *pk, #{enumName} arg) {
+    return msgpack_pack_int(pk, arg);
+}
+
+inline int #{configPrefix c}_#{enumName}_from_msgpack(msgpack_object *obj, #{enumName} *arg) {
+    *arg = obj->via.i64;
+    return 0;
+}
+|]
 
 genFuncDecl _ _ = ""
 
@@ -124,7 +148,8 @@ int #{configPrefix c}_#{msgName}_from_msgpack(msgpack_object *obj, #{msgName} *a
   nums :: [Integer]
   nums = [0..]
 
-genFuncImpl _ _ = ""
+genFuncImpl _ MPEnum {..} = ""  -- enum is inline
+genFuncImpl _ d = "/* #{show d} unsupported */"
 
 
 toMsgpack :: Config -> Type -> T.Text -> LT.Text
@@ -158,13 +183,13 @@ toMsgpack c (TNullable t) arg = [lt|if (!#{arg}) {
 } else {
 #{indent 4 $ toMsgpack c t arg}}|]
 
-toMsgpack c (TPointer t) arg = [lt|if (!#{arg}) {
-    msgpack_pack_null(pk);
-} else {
-#{indent 4 $ toMsgpack' t}}|]
-  where
-    toMsgpack' (TUserDef name _) = [lt|#{configPrefix c}_#{name}_to_msgpack(pk, #{arg});|]
-    toMsgpack' t' = toMsgpack c t' (T.cons '*' arg)
+-- toMsgpack c (TPointer t) arg = [lt|if (!#{arg}) {
+--     msgpack_pack_null(pk);
+-- } else {
+-- #{indent 4 $ toMsgpack' t}}|]
+--   where
+--     toMsgpack' (TUserDef name _) = [lt|#{configPrefix c}_#{name}_to_msgpack(pk, #{arg});|]
+--     toMsgpack' t' = toMsgpack c t' (T.cons '*' arg)
 
 toMsgpack c (TUserDef name _) arg = [lt|#{configPrefix c}_#{name}_to_msgpack(pk, &#{arg});|]
 toMsgpack _ t _ = [lt|msgpack_pack_nil(pk); /* #{show t} unsupported */|]
@@ -197,21 +222,21 @@ for (int _i = 0; _i < #{o}.via.map.size; ++_i) {
     ith_val = T.append arg (T.pack "_vals[_i]")
 
 
-fromMsgpack c o (TPointer t) d arg = [lt|if (#{o}.type == MSGPACK_OBJECT_NIL) {
-    #{arg} = NULL;
-} else {
-#{indent 4 $ fromMsgpack' t}}|]
-  where
-    fromMsgpack' (TUserDef name _) = [lt|#{configPrefix c}_#{name}_from_msgpack(&#{o}, #{arg});|]
-    fromMsgpack' t' = fromMsgpack c o t' d (T.cons '*' arg)
-    --   for malloc
-    -- valsize (TInt _ _) = [lt|sizeof(#{o}.via.i64)|]
-    -- valsize (TFloat _) = [lt|sizeof(#{o}.via.dec)|]
-    -- valsize TBool = [lt|sizeof(#{o}.via.boolean)|]
-    -- valsize TString = [lt|#{o}.via.raw.size|]
-    -- valsize TRaw = [lt|#{o}.via.raw.size|]
-    -- valsize (TUserDef name _) = [lt|sizeof(#{name})|]
-    -- valsize _ = LT.pack "0"
+-- fromMsgpack c o (TPointer t) d arg = [lt|if (#{o}.type == MSGPACK_OBJECT_NIL) {
+--     #{arg} = NULL;
+-- } else {
+-- #{indent 4 $ fromMsgpack' t}}|]
+--   where
+--     fromMsgpack' (TUserDef name _) = [lt|#{configPrefix c}_#{name}_from_msgpack(&#{o}, #{arg});|]
+--     fromMsgpack' t' = fromMsgpack c o t' d (T.cons '*' arg)
+--     --   for malloc
+--     -- valsize (TInt _ _) = [lt|sizeof(#{o}.via.i64)|]
+--     -- valsize (TFloat _) = [lt|sizeof(#{o}.via.dec)|]
+--     -- valsize TBool = [lt|sizeof(#{o}.via.boolean)|]
+--     -- valsize TString = [lt|#{o}.via.raw.size|]
+--     -- valsize TRaw = [lt|#{o}.via.raw.size|]
+--     -- valsize (TUserDef name _) = [lt|sizeof(#{name})|]
+--     -- valsize _ = LT.pack "0"
 
 
 fromMsgpack _ _ t _ _ = [lt|/* #{show t} unsupported */|]
@@ -225,3 +250,12 @@ templ filepath content = [lt|
 
 indent :: Int -> LT.Text -> LT.Text
 indent i s =  LT.unlines $ map (LT.append (LT.pack $ take i $ repeat ' ')) $ LT.split (\ c -> c == '\n') s
+
+sortSpec :: Spec -> Spec
+sortSpec d =
+  sortBy compareSpec d
+  where
+    compareSpec MPEnum {..} _ = GT
+    compareSpec _ MPEnum {..} = LT
+    compareSpec _ _ = EQ
+    
