@@ -104,6 +104,8 @@ genEnumField (num, name) = [lt|#{name} = #{num},|]
 
 genNewDelDecl :: Decl -> LT.Text
 genNewDelDecl MPMessage {..} = [lt|
+#{msgName}* #{msgName}_new();
+void #{msgName}_delete(#{msgName} *arg);|]
 |]
 genNewDelDecl _ = ""
 
