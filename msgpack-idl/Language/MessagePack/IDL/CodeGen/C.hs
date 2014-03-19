@@ -39,7 +39,7 @@ generate Config {..} spec = do
 
 #{LT.concat $ map genTypeDecl ss }
 
-#{LT.concat $ map genNewDelDecl ss }
+#{LT.concat $ map genMsgInitFuncDecl ss }
 
 #{LT.concat $ map genFuncDecl ss }
 
@@ -51,7 +51,7 @@ generate Config {..} spec = do
 #include <msgpack.h>
 #include "#{name}_types.h"
 
-#{LT.concat $ map genNewDelImpl ss }
+#{LT.concat $ map genMsgInitFuncImpl ss }
 
 #{LT.concat $ map genFuncImpl ss }
 
@@ -102,12 +102,12 @@ genField' t name = [lt|/* #{show t}: #{name} unsupported */|]
 genEnumField :: (Int, T.Text) -> LT.Text
 genEnumField (num, name) = [lt|#{name} = #{num},|]
 
-genNewDelDecl :: Decl -> LT.Text
-genNewDelDecl MPMessage {..} = [lt|
-#{msgName}* #{msgName}_new();
-void #{msgName}_delete(#{msgName} *arg);|]
-|]
-genNewDelDecl _ = ""
+genMsgInitFuncDecl :: Decl -> LT.Text
+genMsgInitFuncDecl MPMessage {..} = [lt|
+#{msgName}* #{msgName}_init(#{msgName}* arg);
+void #{msgName}_destroy(#{msgName} *arg);|]
+
+genMsgInitFuncDecl _ = ""
 
 genFuncDecl :: Decl -> LT.Text
 genFuncDecl MPMessage {..} = [lt|
@@ -162,10 +162,38 @@ genFuncImpl MPEnum {..} = ""  -- enum is inline
 genFuncImpl x = [lt|/* #{show x} unsupported */|]
 
 
-genNewDelImpl :: Decl -> LT.Text
-genNewDelImpl MPMessage {..} = [lt|
+genMsgInitFuncImpl :: Decl -> LT.Text
+genMsgInitFuncImpl MPMessage {..} = [lt|
+#{msgName}* #{msgName}_init(#{msgName}* arg) {
+    memset(arg, 0, sizeof(#{msgName}));
+#{LT.concat $ map (indent 4 . genInitField) filteredFields}}
+
+void #{msgName}_destroy(#{msgName} *arg) {
+// TODO
 |]
-genNewDelImpl _ = ""
+  where
+    genInitField Field {..} = genInitField' (T.pack "arg") fldType fldDefault fldName
+    filteredFields = filter byDefault msgFields
+    byDefault Field {..}
+      | fldDefault /= Nothing = True
+      | otherwise             = case (fldType) of
+        (TUserDef _ _) -> True
+        _ -> False
+    
+genMsgInitFuncImpl _ = ""
+
+genInitField' :: T.Text -> Type -> Maybe Literal -> T.Text -> LT.Text
+genInitField' arg _ (Just dflt) fldName = [lt|#{arg}->#{fldName} = #{genLiteral dflt};|]
+genInitField' arg (TUserDef msgName _) _ fldName = [lt|#{msgName}_init(&#{arg}->#{fldName});|]
+genInitField' _ _ _ _ = ""
+
+genLiteral :: Literal -> LT.Text
+genLiteral (LInt i) = [lt|#{show i}|]
+genLiteral (LFloat d) = [lt|#{show d}|]
+genLiteral (LBool b) = [lt|#{show b}|]
+genLiteral LNull = [lt|NULL|]
+genLiteral (LString s) = [lt|#{show s}|]
+
 
 
 toMsgpack :: Type -> T.Text -> LT.Text
