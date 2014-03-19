@@ -206,6 +206,15 @@ fromMsgpack _ o TBool _ arg = [lt|#{arg} = #{o}.via.boolean;|]
 fromMsgpack _ o TString _ arg = [lt|#{arg} = strdup(#{o}.via.raw.ptr);|]
 fromMsgpack c o (TUserDef name _) _ arg = [lt|#{configPrefix c}_#{name}_from_msgpack(&#{o}, &#{arg});|]
 
+fromMsgpack _ o TRaw _ arg = [lt|#{arg} = malloc(#{o}.via.raw.size);
+if (#{arg} == NULL) {
+    return -1;
+}
+#{raw_size} = #{o}.via.raw.size;
+memcpy(#{arg}, #{o}.via.raw.ptr, #{o}.via.raw.size);|]
+  where
+    raw_size = T.append arg (T.pack "_size")
+
 fromMsgpack c o (TList t) d arg = [lt|#{lis_size} = #{o}.via.array.size;
 for (int _i = 0; _i < #{o}.via.array.size; ++_i) {
 #{indent 4 $ fromMsgpack c (T.pack $ printf "%s.via.array.ptr[_i]" $ T.unpack o) t d ith_val}}|]
