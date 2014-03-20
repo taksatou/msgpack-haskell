@@ -51,9 +51,9 @@ generate Config {..} spec = do
 #include <msgpack.h>
 #include "#{name}_types.h"
 
-#{LT.concat $ map genMsgInitFuncImpl ss }
+#{LT.concat $ map (genMsgInitFuncImpl spec) ss }
 
-#{LT.concat $ map genFuncImpl ss }
+#{LT.concat $ map (genFuncImpl spec) ss }
 
 |]
 
@@ -114,23 +114,23 @@ genFuncDecl MPMessage {..} = [lt|
 int #{msgName}_to_msgpack(msgpack_packer *pk, #{msgName} *arg);
 int #{msgName}_from_msgpack(msgpack_object *obj, #{msgName} *arg);|]
 
-genFuncDecl MPEnum {..} = [lt|
+-- genFuncDecl MPEnum {..} = [lt|
 
-inline int #{enumName}_to_msgpack(msgpack_packer *pk, #{enumName} arg) {
-    return msgpack_pack_int(pk, arg);
-}
+-- inline int #{enumName}_to_msgpack(msgpack_packer *pk, #{enumName} arg) {
+--     return msgpack_pack_int(pk, arg);
+-- }
 
-inline int #{enumName}_from_msgpack(msgpack_object *obj, #{enumName} *arg) {
-    *arg = obj->via.i64;
-    return 0;
-}
-|]
+-- inline int #{enumName}_from_msgpack(msgpack_object *obj, #{enumName} *arg) {
+--     *arg = obj->via.i64;
+--     return 0;
+-- }
+-- |]
 
 genFuncDecl _ = ""
 
 -- TODO: error check
-genFuncImpl :: Decl -> LT.Text
-genFuncImpl MPMessage {..} = [lt|
+genFuncImpl :: Spec -> Decl -> LT.Text
+genFuncImpl spec MPMessage {..} = [lt|
 int #{msgName}_to_msgpack(msgpack_packer *pk, #{msgName} *arg) {
     msgpack_pack_array(pk, #{length msgFields});
 #{LT.concat $ map pk msgFields}
@@ -149,38 +149,43 @@ int #{msgName}_from_msgpack(msgpack_object *obj, #{msgName} *arg) {
 }
 |]
   where
-  pk Field {..} = indent 4
-    [lt|#{toMsgpack fldType (T.append (T.pack "arg->") fldName)}|]
+  pk Field {..} = indent 4 $
+    if isEnumType spec fldType
+    then [lt|#{toMsgpack (TInt False 32) (T.append (T.pack "arg->") fldName)}|]
+    else [lt|#{toMsgpack fldType (T.append (T.pack "arg->") fldName)}|]
 
-  unpk (idx, Field {..}) = indent 4
-    [lt|#{fromMsgpack (T.pack $ printf "o[%d]" idx) fldType fldDefault (T.append (T.pack "arg->") fldName)}|]
+  unpk (idx, Field {..}) = indent 4 $
+    if isEnumType spec fldType
+    then [lt|#{fromMsgpack (T.pack $ printf "o[%d]" idx) (TInt False 32) fldDefault (T.append (T.pack "arg->") fldName)}|]
+    else [lt|#{fromMsgpack (T.pack $ printf "o[%d]" idx) fldType fldDefault (T.append (T.pack "arg->") fldName)}|]
 
   nums :: [Integer]
   nums = [0..]
 
-genFuncImpl MPEnum {..} = ""  -- enum is inline
-genFuncImpl x = [lt|/* #{show x} unsupported */|]
+genFuncImpl _ MPEnum {..} = ""  -- enum is inline
+genFuncImpl _ x = [lt|/* #{show x} unsupported */|]
 
 
-genMsgInitFuncImpl :: Decl -> LT.Text
-genMsgInitFuncImpl MPMessage {..} = [lt|
+genMsgInitFuncImpl :: Spec -> Decl -> LT.Text
+genMsgInitFuncImpl spec MPMessage {..} = [lt|
 #{msgName}* #{msgName}_init(#{msgName}* arg) {
     memset(arg, 0, sizeof(#{msgName}));
 #{LT.concat $ map (indent 4 . genInitField) filteredFields}}
 
 void #{msgName}_destroy(#{msgName} *arg) {
 // TODO
+}
 |]
   where
     genInitField Field {..} = genInitField' (T.pack "arg") fldType fldDefault fldName
-    filteredFields = filter byDefault msgFields
-    byDefault Field {..}
+    filteredFields = filter bySpec msgFields
+    bySpec Field {..}
       | fldDefault /= Nothing = True
-      | otherwise             = case (fldType) of
-        (TUserDef _ _) -> True
+      | otherwise             = case fldType of
+        (TUserDef _ _) -> not $ isEnumType spec fldType
         _ -> False
     
-genMsgInitFuncImpl _ = ""
+genMsgInitFuncImpl _ _ = ""
 
 genInitField' :: T.Text -> Type -> Maybe Literal -> T.Text -> LT.Text
 genInitField' arg _ (Just dflt) fldName = [lt|#{arg}->#{fldName} = #{genLiteral dflt};|]
@@ -199,7 +204,7 @@ genLiteral (LString s) = [lt|#{show s}|]
 toMsgpack :: Type -> T.Text -> LT.Text
 toMsgpack (TInt _ _) arg = [lt|msgpack_pack_int(pk, #{arg});|]
 toMsgpack (TFloat _) arg = [lt|msgpack_pack_double(pk, #{arg});|]
-toMsgpack TBool arg = [lt|#{arg} ? msgpack_pack_true(pk) : msgpack_pack_false(pk)});|]
+toMsgpack TBool arg = [lt|#{arg} ? msgpack_pack_true(pk) : msgpack_pack_false(pk);|]
 toMsgpack TString arg = [lt|do {
     size_t _l = strlen(#{arg});
     msgpack_pack_raw(pk, _l);
@@ -250,8 +255,7 @@ fromMsgpack o (TUserDef name _) _ arg = [lt|#{name}_from_msgpack(&#{o}, &#{arg})
 fromMsgpack o (TNullable t) d arg = [lt|if (#{o}.type == MSGPACK_OBJECT_NIL) {
     #{arg} = NULL;
 } else {
-#{indent 4 $ fromMsgpack o t d arg}
-}|]
+#{indent 4 $ fromMsgpack o t d arg}}|]
 
 fromMsgpack o TRaw _ arg = [lt|#{arg} = malloc(#{o}.via.raw.size);
 if (#{arg} == NULL) {
@@ -297,3 +301,12 @@ sortSpec d =
     compareSpec _ MPEnum {..} = LT
     compareSpec _ _ = EQ
     
+isEnumDecl :: Decl -> Bool
+isEnumDecl MPEnum {..} = True
+isEnumDecl _ = False
+
+isEnumType :: Spec -> Type -> Bool
+isEnumType spec (TUserDef name _) = elem name $ map enumName $ filter isEnumDecl spec
+isEnumType _ _ = False
+
+
