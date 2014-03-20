@@ -17,6 +17,11 @@ import System.Directory
 
 import Language.MessagePack.IDL.Syntax
 
+
+-- TODO
+--  * list and map value initialization
+--  * destructor
+
 data Config
   = Config
     { configFilePath :: FilePath
@@ -88,7 +93,9 @@ genField' TRaw name = [lt|size_t #{name}_size;
 void *#{name};|]
 
 genField' (TList t) name = [lt|size_t #{name}_size;
-#{genField' t name}|]
+#{genField' t vals_field}|]
+  where
+    vals_field = T.cons '*' name
 
 genField' (TMap t1 t2) name = [lt|size_t #{name}_size;
 #{genField' t1 keys_field }
@@ -200,7 +207,6 @@ genLiteral LNull = [lt|NULL|]
 genLiteral (LString s) = [lt|#{show s}|]
 
 
-
 toMsgpack :: Type -> T.Text -> LT.Text
 toMsgpack (TInt _ _) arg = [lt|msgpack_pack_int(pk, #{arg});|]
 toMsgpack (TFloat _) arg = [lt|msgpack_pack_double(pk, #{arg});|]
@@ -241,9 +247,6 @@ toMsgpack (TNullable t) arg = [lt|if (!#{arg}) {
 toMsgpack (TUserDef name _) arg = [lt|#{name}_to_msgpack(pk, &#{arg});|]
 toMsgpack t _ = [lt|msgpack_pack_nil(pk); /* #{show t} unsupported */|]
 
--- TODO:
---   * set default
---   * malloc for pointer?
 
 fromMsgpack :: T.Text -> Type -> Maybe Literal -> T.Text -> LT.Text
 fromMsgpack o (TInt _ _) _ arg = [lt|#{arg} = #{o}.via.i64;|]
@@ -266,20 +269,32 @@ memcpy(#{arg}, #{o}.via.raw.ptr, #{o}.via.raw.size);|]
   where
     raw_size = T.append arg (T.pack "_size")
 
-fromMsgpack o (TList t) d arg = [lt|#{lis_size} = #{o}.via.array.size;
+fromMsgpack o (TList t) d arg = [lt|#{arg} = malloc(#{o}.via.array.size * #{typeSize t});
+if (#{arg} == NULL) {
+    return -1;
+}
+#{lis_size} = #{o}.via.array.size;
 for (int _i = 0; _i < #{o}.via.array.size; ++_i) {
 #{indent 4 $ fromMsgpack (T.pack $ printf "%s.via.array.ptr[_i]" $ T.unpack o) t d ith_val}}|]
   where
     lis_size = T.append arg (T.pack "_size")
     ith_val = T.append arg (T.pack "[_i]")
 
-fromMsgpack o (TMap t1 t2) d arg = [lt|#{map_size} = #{o}.via.map.size;
+fromMsgpack o (TMap t1 t2) d arg = [lt|#{key_arg} = malloc(#{o}.via.map.size * #{typeSize t1});
+#{val_arg} = malloc(#{o}.via.map.size * #{typeSize t2});
+if (#{key_arg} == NULL || #{val_arg} == NULL) {
+    return -1;
+}
+#{map_size} = #{o}.via.map.size;
 for (int _i = 0; _i < #{o}.via.map.size; ++_i) {
+#{indent 4 $
 #{indent 4 $ fromMsgpack (T.pack $ printf "%s.via.map.ptr[_i].key" $ T.unpack o) t1 d ith_key}#{indent 4 $ fromMsgpack (T.pack $ printf "%s.via.map.ptr[_i].val" $ T.unpack o) t2 d ith_val}}|]
   where
-    map_size = T.append arg (T.pack "_size")
-    ith_key = T.append arg (T.pack "_keys[_i]")
-    ith_val = T.append arg (T.pack "_vals[_i]")
+    map_size = T.append arg $ T.pack "_size"
+    key_arg = T.append arg $ T.pack "_keys"
+    val_arg = T.append arg $ T.pack "_vals"
+    ith_key = T.append key_arg $ T.pack "[_i]"
+    ith_val = T.append val_arg $ T.pack "[_i]"
 
 fromMsgpack _ t _ _ = [lt|/* #{show t} unsupported */|]
 
@@ -309,4 +324,8 @@ isEnumType :: Spec -> Type -> Bool
 isEnumType spec (TUserDef name _) = elem name $ map enumName $ filter isEnumDecl spec
 isEnumType _ _ = False
 
+typeSize :: Type -> LT.Text
+typeSize (TUserDef name _) = [lt|sizeof(#{name})|]
+typeSize TString = [lt|sizeof(void*)|]
+typeSize t = error $ show t
 
