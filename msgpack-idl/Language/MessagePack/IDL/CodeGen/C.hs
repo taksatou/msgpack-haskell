@@ -21,6 +21,7 @@ import Language.MessagePack.IDL.Syntax
 -- TODO
 --  * list and map value initialization
 --  * destructor
+--  * enum type initialization
 
 data Config
   = Config
@@ -157,12 +158,13 @@ int #{msgName}_from_msgpack(msgpack_object *obj, #{msgName} *arg) {
 |]
   where
   pk Field {..} = indent 4 $
-    if isEnumType spec fldType
+    if isUserDef spec fldType
     then [lt|#{toMsgpack (TInt False 32) (T.append (T.pack "arg->") fldName)}|]
     else [lt|#{toMsgpack fldType (T.append (T.pack "arg->") fldName)}|]
 
   unpk (idx, Field {..}) = indent 4 $
-    if isEnumType spec fldType
+    [lt|#{fromMsgpack spec (T.pack $ printf "o[%d]" idx) fldType fldDefault (T.append (T.pack "arg->") fldName)}|]
+    if isUserDef spec fldType
     then [lt|#{fromMsgpack (T.pack $ printf "o[%d]" idx) (TInt False 32) fldDefault (T.append (T.pack "arg->") fldName)}|]
     else [lt|#{fromMsgpack (T.pack $ printf "o[%d]" idx) fldType fldDefault (T.append (T.pack "arg->") fldName)}|]
 
@@ -189,7 +191,7 @@ void #{msgName}_destroy(#{msgName} *arg) {
     bySpec Field {..}
       | fldDefault /= Nothing = True
       | otherwise             = case fldType of
-        (TUserDef _ _) -> not $ isEnumType spec fldType
+        (TUserDef _ _) -> isUserDef spec fldType
         _ -> False
     
 genMsgInitFuncImpl _ _ = ""
@@ -287,7 +289,6 @@ if (#{key_arg} == NULL || #{val_arg} == NULL) {
 }
 #{map_size} = #{o}.via.map.size;
 for (int _i = 0; _i < #{o}.via.map.size; ++_i) {
-#{indent 4 $
 #{indent 4 $ fromMsgpack (T.pack $ printf "%s.via.map.ptr[_i].key" $ T.unpack o) t1 d ith_key}#{indent 4 $ fromMsgpack (T.pack $ printf "%s.via.map.ptr[_i].val" $ T.unpack o) t2 d ith_val}}|]
   where
     map_size = T.append arg $ T.pack "_size"
@@ -320,9 +321,9 @@ isEnumDecl :: Decl -> Bool
 isEnumDecl MPEnum {..} = True
 isEnumDecl _ = False
 
-isEnumType :: Spec -> Type -> Bool
-isEnumType spec (TUserDef name _) = elem name $ map enumName $ filter isEnumDecl spec
-isEnumType _ _ = False
+isUserDef :: Spec -> Type -> Bool
+isUserDef spec (TUserDef name _) = not $ elem name $ map enumName $ filter isEnumDecl spec
+isUserDef _ _ = False
 
 typeSize :: Type -> LT.Text
 typeSize (TUserDef name _) = [lt|sizeof(#{name})|]
