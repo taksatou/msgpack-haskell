@@ -1,0 +1,28 @@
+message UserInfo {
+  1: int uid
+  2: string? name
+  3: int? flags = 1
+}
+
+enum Sites {
+  0: SiteA
+  1: SiteB
+  2: SiteC
+}
+
+message LogInLog {
+  1: UserInfo user
+  2: Sites site
+  4: int num
+  5: list<Sites> sites
+  6: map<string, Sites> sites2
+  7: string s1
+  8: bool b1
+  9: raw? r1
+  10: double d1
+  100: int? i2
+  101: my_type_x my1
+  102: list<UserInfo> user_list
+  103: map<UserInfo, UserInfo> user_map
+  104: map<string, list<int> > nested
+}
