@@ -18,8 +18,8 @@ import System.Directory
 import Language.MessagePack.IDL.Syntax
 
 
--- TODO
---  * destructor
+-- memo
+--  * enumがTUserDef扱いとなっているので、int扱いにするための分岐で複雑になっている
 
 data Config
   = Config
@@ -91,17 +91,12 @@ genField' (TNullable t) name = genField' t name
 genField' TRaw name = [lt|size_t #{name}_size;
 void *#{name};|]
 
-genField' (TList t) name = [lt|size_t #{name}_size;
-#{genField' t vals_field}|]
-  where
-    vals_field = T.cons '*' name
+genField' (TList t) name = [lt|size_t #{lis_size name};
+#{genField' t $ ptr name}|]
 
-genField' (TMap t1 t2) name = [lt|size_t #{name}_size;
-#{genField' t1 keys_field }
-#{genField' t2 vals_field }|]
-  where
-    keys_field = T.cons '*' (T.append name $ T.pack "_keys")
-    vals_field = T.cons '*' (T.append name $ T.pack "_vals")
+genField' (TMap t1 t2) name = [lt|size_t #{map_size name};
+#{genField' t1 $ ptr $ map_keys name }
+#{genField' t2 $ ptr $ map_vals name }|]
 
 genField' t name = [lt|/* #{show t}: #{name} unsupported */|]
 
@@ -179,19 +174,24 @@ void #{msgName}_destroy(#{msgName} *arg) {
 #{LT.concat $ map (indent 4 . genDtorCall) dtorFields}}
 |]
   where
-    genDtorCall Field {..} = genDtorCall' (T.pack "arg") fldType fldName
+    genDtorCall Field {..} = genDtorCall' spec (T.pack "arg") fldType fldName
     genInitField Field {..} = genInitField' (T.pack "arg") fldType fldDefault fldName
-    dtorFields = filter byUserDef msgFields
+    dtorFields = filter byType msgFields
     initFields = filter bySpec msgFields
     bySpec Field {..}
       | fldDefault /= Nothing = True
       | otherwise             = case fldType of
         (TUserDef _ _) -> not $ isEnumType spec fldType
         _ -> False
-    byUserDef Field {..} = case fldType of
+    byType Field {..} = case fldType of
       (TUserDef _ _) -> not $ isEnumType spec fldType
+      TString -> True
+      TRaw -> True
+      (TNullable _) -> True
+      (TList _) -> True
+      (TMap _ _) -> True
       _ -> False
-    
+
 genMsgCDtorImpl _ _ = ""
 
 genInitField' :: T.Text -> Type -> Maybe Literal -> T.Text -> LT.Text
@@ -199,11 +199,82 @@ genInitField' arg _ (Just dflt) fldName = [lt|#{arg}->#{fldName} = #{genLiteral 
 genInitField' arg (TUserDef msgName _) _ fldName = [lt|#{msgName}_init(&#{arg}->#{fldName});|]
 genInitField' _ _ _ _ = ""
 
-genDtorCall' :: T.Text -> Type -> T.Text -> LT.Text
-genDtorCall' arg (TUserDef name _) fldName = [lt|#{name}_destroy(&#{arg}->#{fldName});|]
--- genDtorCall' arg (TList t) fldName = [lt|if (#{arg}->#{fldName}
--- |]
-genDtorCall' _ _ _ = ""
+needFree :: Type -> Bool
+needFree TRaw = True
+needFree TString = True
+needFree (TUserDef _ _) = True
+needFree _ = False
+
+genDtorCall'' :: Type -> T.Text -> LT.Text
+genDtorCall'' (TUserDef name _) arg = [lt|#{name}_destroy(#{arg});|]
+genDtorCall'' TRaw arg = [lt|free(#{arg});|]
+genDtorCall'' TString arg = [lt|free(#{arg});|]
+genDtorCall'' t arg = [lt|/* #{arg} #{show t} unsupported */|]
+
+genDtorCall' :: Spec -> T.Text -> Type -> T.Text -> LT.Text
+genDtorCall' s arg (TNullable t) fldName = genDtorCall' s arg t fldName
+genDtorCall' _ arg (TList t) fldName = if needFree t
+  then [lt|if (#{arg}->#{fldName}) {
+    for (int _i = 0; _i < #{arg}->#{lis_size arg}; ++_i) {
+        #{genDtorCall'' t $ lis_ith_val arg}
+    }
+    free(#{arg}->#{fldName});
+}|]
+  else [lt|if (#{arg}->#{fldName}) free(#{arg}->#{fldName});|]
+
+-- genDtorCall' _ arg (TList t) fldName = case t of
+--   (TUserDef name _) -> listDestroy name
+--   TString -> listFree
+--   TRaw -> listFree
+--   (TList _) -> [lt|/* #{show t} nested type unsupported */|]
+--   (TMap _ _) -> [lt|/* #{show t} nested type unsupported */|]
+--   _ -> noFree
+--   where
+--     listDestroy msgType = [lt|if (#{arg}->#{fldName}) {
+--     for (int _i = 0; _i < #{arg}->#{lis_size arg}; ++_i) {
+--         #{msgType}_destroy(&#{lis_ith_val arg});
+--     }
+--     free(#{arg}->#{fldName});
+-- }|]
+--     listFree = [lt|if (#{arg}->#{fldName}) {
+--     for (int _i = 0; _i < #{arg}->#{lis_size arg}; ++_i) {
+--         free(&#{lis_ith_val arg});
+--     }
+--     free(#{arg}->#{fldName});
+-- }|]
+--     noFree = [lt|if (#{arg}->#{fldName}) free(#{arg}->#{fldName});|]
+
+-- genDtorCall' s arg (TMap t1 t2) fldName = case t of
+--   (TUserDef name _) -> listDestroy name
+--   TString -> listFree
+--   TRaw -> listFree
+--   (TList _) -> [lt|/* #{show t} nested type unsupported */|]
+--   (TMap _ _) -> [lt|/* #{show t} nested type unsupported */|]
+--   _ -> noFree
+--   where
+--     listDestroy msgType = [lt|if (#{arg}->#{fldName}) {
+--     for (int _i = 0; _i < #{arg}->#{lis_size arg}; ++_i) {
+--         #{msgType}_destroy(&#{lis_ith_val arg});
+--     }
+--     free(#{arg}->#{fldName});
+-- }|]
+--     listFree = [lt|if (#{arg}->#{fldName}) {
+--     for (int _i = 0; _i < #{arg}->#{lis_size arg}; ++_i) {
+--         free(&#{lis_ith_val arg});
+--     }
+--     free(#{arg}->#{fldName});
+-- }|]
+--     noFree = [lt|if (#{arg}->#{fldName}) free(#{arg}->#{fldName});|]
+
+-- genDtorCall' _ arg (TUserDef name _) fldName = genDtorCall'' 
+-- genDtorCall' _ arg TRaw fldName = [lt|if (#{arg}->#{fldName}) free(#{arg}->#{fldName});|]
+-- genDtorCall' _ arg TString fldName = [lt|if (#{arg}->#{fldName}) free(#{arg}->#{fldName});|]
+
+genDtorCall' _ arg t fldName = [lt|if (#{arg}->#{fldName}) #{genDtorCall'' t arg'}|]
+  where
+    arg' = case t of
+      (TUserDef _ _) -> T.concat [T.pack "&", arg, T.pack "->", fldName]
+      _              -> T.concat [arg, T.pack "->", fldName]
 
 genLiteral :: Literal -> LT.Text
 genLiteral (LInt i) = [lt|#{show i}|]
@@ -226,11 +297,11 @@ toMsgpack _ TRaw arg = [lt|msgpack_pack_raw(pk, #{raw_size arg});
 msgpack_pack_raw_body(pk, #{arg}, #{raw_size arg});|]
 
 toMsgpack s (TList t) arg = [lt|msgpack_pack_array(pk, #{lis_size arg});
-for (int _i = 0; i < #{lis_size arg}; ++_i) {
+for (int _i = 0; _i < #{lis_size arg}; ++_i) {
 #{indent 4 $ toMsgpack s t $ lis_ith_val arg}}|]
 
 toMsgpack s (TMap t1 t2) arg = [lt|msgpack_pack_map(pk, #{map_size arg});
-for (int _i = 0; i < #{map_size arg}; ++_i) {
+for (int _i = 0; _i < #{map_size arg}; ++_i) {
 #{indent 4 $ toMsgpack s t1 $ map_ith_key arg}#{indent 4 $ toMsgpack s t2 $ map_ith_val arg}}|]
 
 toMsgpack s (TNullable t) arg = [lt|if (!#{arg}) {
@@ -304,7 +375,7 @@ sortSpec d =
     compareSpec MPEnum {..} _ = GT
     compareSpec _ MPEnum {..} = LT
     compareSpec _ _ = EQ
-    
+
 isEnumDecl :: Decl -> Bool
 isEnumDecl MPEnum {..} = True
 isEnumDecl _ = False
@@ -341,3 +412,6 @@ map_keys arg = T.append arg (T.pack "_keys")
 
 map_vals :: T.Text -> T.Text
 map_vals arg = T.append arg (T.pack "_vals")
+
+ptr :: T.Text -> T.Text
+ptr arg = T.cons '*' arg
