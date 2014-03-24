@@ -168,7 +168,9 @@ genMsgCDtorImpl :: Spec -> Decl -> LT.Text
 genMsgCDtorImpl spec MPMessage {..} = [lt|
 #{msgName}* #{msgName}_init(#{msgName}* arg) {
     memset(arg, 0, sizeof(#{msgName}));
-#{LT.concat $ map (indent 4 . genInitField) initFields}}
+#{LT.concat $ map (indent 4 . genInitField) initFields}
+    return 0;
+}
 
 void #{msgName}_destroy(#{msgName} *arg) {
 #{LT.concat $ map (indent 4 . genDtorCall) dtorFields}}
@@ -269,11 +271,13 @@ toMsgpack :: Spec -> Type -> T.Text -> LT.Text
 toMsgpack _ (TInt _ _) arg = [lt|msgpack_pack_int(pk, #{arg});|]
 toMsgpack _ (TFloat _) arg = [lt|msgpack_pack_double(pk, #{arg});|]
 toMsgpack _ TBool arg = [lt|#{arg} ? msgpack_pack_true(pk) : msgpack_pack_false(pk);|]
-toMsgpack _ TString arg = [lt|do {
+toMsgpack _ TString arg = [lt|if (#{arg}) {
     size_t _l = strlen(#{arg});
     msgpack_pack_raw(pk, _l);
     msgpack_pack_raw_body(pk, #{arg}, _l);
-} while(0);|]
+} else {
+    msgpack_pack_nil(pk);
+}|]
 
 toMsgpack _ TRaw arg = [lt|msgpack_pack_raw(pk, #{raw_size arg});
 msgpack_pack_raw_body(pk, #{arg}, #{raw_size arg});|]

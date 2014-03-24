@@ -9,6 +9,8 @@
 
 my_type_x* my_type_x_init(my_type_x* arg) {
     memset(arg, 0, sizeof(my_type_x));
+
+    return 0;
 }
 
 void my_type_x_destroy(my_type_x *arg) {
@@ -17,6 +19,8 @@ void my_type_x_destroy(my_type_x *arg) {
 UserInfo* UserInfo_init(UserInfo* arg) {
     memset(arg, 0, sizeof(UserInfo));
     arg->flags = 1;
+
+    return 0;
 }
 
 void UserInfo_destroy(UserInfo *arg) {
@@ -27,6 +31,8 @@ LogInLog* LogInLog_init(LogInLog* arg) {
     memset(arg, 0, sizeof(LogInLog));
     UserInfo_init(&arg->user);
     my_type_x_init(&arg->my1);
+
+    return 0;
 }
 
 void LogInLog_destroy(LogInLog *arg) {
@@ -88,11 +94,13 @@ int UserInfo_to_msgpack(msgpack_packer *pk, UserInfo *arg) {
     if (!arg->name) {
         msgpack_pack_nil(pk);
     } else {
-        do {
+        if (arg->name) {
             size_t _l = strlen(arg->name);
             msgpack_pack_raw(pk, _l);
             msgpack_pack_raw_body(pk, arg->name, _l);
-        } while(0);
+        } else {
+            msgpack_pack_nil(pk);
+        }
     }
     msgpack_pack_int(pk, arg->flags);
 
@@ -129,18 +137,22 @@ int LogInLog_to_msgpack(msgpack_packer *pk, LogInLog *arg) {
     }
     msgpack_pack_map(pk, arg->sites2_size);
     for (int _i = 0; _i < arg->sites2_size; ++_i) {
-        do {
+        if (arg->sites2_keys[_i]) {
             size_t _l = strlen(arg->sites2_keys[_i]);
             msgpack_pack_raw(pk, _l);
             msgpack_pack_raw_body(pk, arg->sites2_keys[_i], _l);
-        } while(0);
+        } else {
+            msgpack_pack_nil(pk);
+        }
         msgpack_pack_int(pk, arg->sites2_vals[_i]);
     }
-    do {
+    if (arg->s1) {
         size_t _l = strlen(arg->s1);
         msgpack_pack_raw(pk, _l);
         msgpack_pack_raw_body(pk, arg->s1, _l);
-    } while(0);
+    } else {
+        msgpack_pack_nil(pk);
+    }
     arg->b1 ? msgpack_pack_true(pk) : msgpack_pack_false(pk);
     msgpack_pack_raw(pk, arg->r1_size);
     msgpack_pack_raw_body(pk, arg->r1, arg->r1_size);
